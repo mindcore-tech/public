@@ -1,4 +1,3 @@
-
 <#
 	==========================================================================
 	 Created on:    18-08-2025 19:53
@@ -25,189 +24,96 @@
     .\Enable-MIPLabels.ps1 -SkipLabelSync
     This will perform the same operations but skip the label sync step.
 
-    .\Enable-MIPLabels.ps1 -Loglevel Verbose
-    This will run the script with verbose logging enabled.
-
 Updates:
     18-08-2025: First version. 
     
 #>
 
-[CmdletBinding(SupportsShouldProcess)]
 param(
-    [string[]]$GraphScopes = @(
-        'Directory.ReadWrite.All'#,
-        #'Policy.Read.All'
-    ),
-    [switch]$SkipLabelSync,
-    [switch]$Quiet
+    [switch]$SkipLabelSync
 )
 
-# ---------- Logging ----------
-function Write-Log {
-    param(
-        [Parameter(Mandatory)][string]$Message,
-        [ValidateSet('Info','Warn','Error','Verbose')]
-        [string]$Level = 'Info'
-    )
-    $ts = (Get-Date).ToString('u')
-    switch ($Level) {
-        'Info' {
-            if (-not $Quiet) {
-                Write-Information "[$ts] $Message" -InformationAction Continue
+Write-Host "Connecting to Microsoft Graph..."
+try {
+    Connect-MgGraph -Scopes "Directory.ReadWrite.All" | Out-Null
+    Write-Host "Connected to Microsoft Graph."
+} catch {
+    Write-Error "Failed to connect to Microsoft Graph: $_"
+    exit 1
+}
+
+try {
+    Write-Host "Retrieving Group.Unified directory setting..."
+    $allSettings = Get-MgBetaDirectorySetting -All
+    $grpUnifiedSetting = $allSettings | Where-Object { $_.DisplayName -eq "Group.Unified" }
+    if (-not $grpUnifiedSetting) {
+        throw "Group.Unified setting not found."
+    }
+    Write-Host "Group.Unified setting found. Updating EnableMIPLabels..."
+
+    $params = @{
+        Values = @(
+            @{
+                Name  = "EnableMIPLabels"
+                Value = "True"
             }
-        }
-        'Warn'    { Write-Warning "[$ts] $Message" }
-        'Error'   { Write-Error "[$ts] $Message" }
-        'Verbose' { Write-Verbose "[$ts] $Message" }
+        )
     }
+
+    Update-MgBetaDirectorySetting -DirectorySettingId $grpUnifiedSetting.Id -BodyParameter $params -ErrorAction Stop
+    Write-Host "EnableMIPLabels updated to 'True'."
+
+    $Setting = Get-MgBetaDirectorySetting -DirectorySettingId $grpUnifiedSetting.Id -ErrorAction Stop
+    Write-Host "Current setting values:"
+    $Setting.Values | Format-Table -AutoSize
 }
-
-if (-not $Quiet) { $InformationPreference = 'Continue' }
-
-# ---------- Utility ----------
-function Test-Command {
-    param([Parameter(Mandatory)][string]$Name)
-    if (-not (Get-Command -Name $Name -ErrorAction SilentlyContinue)) {
-        throw "Required command '$Name' not found. Install/import the module that provides it."
-    }
-}
-
-function Connect-GraphSafe {
-    param([string[]]$Scopes)
-    if (-not (Get-MgContext)) {
-        Write-Log -Level Verbose -Message "Connecting to Microsoft Graph with scopes: $($Scopes -join ', ')"
-        Connect-MgGraph -Scopes $Scopes -ErrorAction Stop | Out-Null
-    } else {
-        Write-Log -Level Verbose -Message "Microsoft Graph already connected (Tenant: $((Get-MgContext).TenantId))."
-    }
-}
-
-# ---------- Directory Setting Retrieval / Update ----------
-function Get-GroupUnifiedSetting {
+catch {
+    Write-Warning "Could not update existing Group.Unified setting: $_"
     try {
-        $s = Get-MgBetaDirectorySetting -Search 'DisplayName:"Group.Unified"' -ErrorAction Stop
-        if ($s) { return $s }
-    } catch {
-        Write-Log -Level Verbose -Message "Search retrieval failed, enumerating settings."
-    }
-    return Get-MgBetaDirectorySetting -All | Where-Object DisplayName -eq 'Group.Unified'
-}
+        Write-Host "Attempting to create Group.Unified setting from template..."
+        $Template = Get-MgBetaDirectorySettingTemplate | Where-Object { $_.DisplayName -eq "Group.Unified" }
+        if (-not $Template) {
+            throw "Group.Unified template not found."
+        }
 
-function Set-GroupUnifiedSetting {
-    [CmdletBinding()]
-    param()
-
-    $setting = Get-GroupUnifiedSetting
-
-    if (-not $setting) {
-        Write-Log -Level Verbose -Message "Group.Unified setting not found. Creating from template."
-        $template = Get-MgBetaDirectorySettingTemplate -All | Where-Object DisplayName -eq 'Group.Unified'
-        if (-not $template) { throw "Group.Unified template not found." }
-
-        $body = @{
-            templateId = $template.Id
+        $params = @{
+            templateId = $Template.Id
             values     = @(
-                @{ name = 'EnableMIPLabels'; value = 'True' }
+                @{
+                    name  = "EnableMIPLabels"
+                    value = "True"
+                }
             )
         }
 
-        if ($PSCmdlet.ShouldProcess("DirectorySetting(Group.Unified)", "Create with EnableMIPLabels=True")) {
-            $setting = New-MgBetaDirectorySetting -BodyParameter $body -ErrorAction Stop
-        }
+        New-MgBetaDirectorySetting -BodyParameter $params -ErrorAction Stop
+        Write-Host "Group.Unified setting created."
+
+        $allSettings = Get-MgBetaDirectorySetting -All
+        $grpUnifiedSetting = $allSettings | Where-Object { $_.DisplayName -eq "Group.Unified" }
+        $Setting = Get-MgBetaDirectorySetting -DirectorySettingId $grpUnifiedSetting.Id -ErrorAction Stop
+        Write-Host "Current setting values:"
+        $Setting.Values | Format-Table -AutoSize
     }
-    return $setting
-}
-
-function Set-EnableMIPLabels {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)]$Setting)
-
-    $currentValue = ($Setting.Values | Where-Object Name -eq 'EnableMIPLabels').Value
-    if ($currentValue -eq 'True') {
-        Write-Log -Level Verbose -Message "EnableMIPLabels already True. No update needed."
-        return $Setting
-    }
-
-    $updatedValues =
-        $Setting.Values |
-        ForEach-Object {
-            if ($_.Name -eq 'EnableMIPLabels') {
-                @{ Name = 'EnableMIPLabels'; Value = 'True' }
-            } else {
-                @{ Name = $_.Name; Value = $_.Value }
-            }
-        }
-
-    if (-not ($updatedValues | Where-Object Name -eq 'EnableMIPLabels')) {
-        $updatedValues += @{ Name = 'EnableMIPLabels'; Value = 'True' }
-    }
-
-    $body = @{ Values = $updatedValues }
-
-    if ($PSCmdlet.ShouldProcess("DirectorySetting:$($Setting.Id)", "Set EnableMIPLabels=True")) {
-        Update-MgBetaDirectorySetting -DirectorySettingId $Setting.Id -BodyParameter $body -ErrorAction Stop
-        Write-Log -Level Verbose -Message "Updated EnableMIPLabels to True."
-    }
-    return Get-MgBetaDirectorySetting -DirectorySettingId $Setting.Id
-}
-
-# ---------- Label Sync ----------
-function Invoke-LabelSync {
-    [CmdletBinding()]
-    param()
-
-    Test-Command -Name Connect-IPPSSession
-    Test-Command -Name Execute-AzureAdLabelSync
-
-    if (-not (Get-PSSession | Where-Object { $_.ComputerName -like '*compliance*' })) {
-        Write-Log -Level Verbose -Message "Connecting to IPPS (Security & Compliance Center)."
-        # Banner from module will appear here (cannot suppress)
-        Connect-IPPSSession -ErrorAction Stop | Out-Null
-    } else {
-        Write-Log -Level Verbose -Message "IPPS session already present."
-    }
-
-    Write-Log -Level Verbose -Message "Executing Azure AD label sync."
-    Execute-AzureAdLabelSync
-}
-
-# ---------- Main ----------
-try {
-    Write-Log -Message "Starting operation."
-
-    Test-Command -Name Connect-MgGraph
-    Test-Command -Name Get-MgBetaDirectorySetting
-
-    Connect-GraphSafe -Scopes $GraphScopes
-
-    $setting = Set-GroupUnifiedSetting
-    $final   = Set-EnableMIPLabels -Setting $setting
-
-    $effective = ($final.Values | Where-Object Name -eq 'EnableMIPLabels').Value
-    Write-Log -Message "EnableMIPLabels current value: $effective"
-
-    if (-not $SkipLabelSync) {
-        Invoke-LabelSync
-        Write-Log -Message "Label sync triggered."
-    } else {
-        Write-Log -Level Verbose -Message "Label sync skipped."
-    }
-
-    Write-Log -Message "Completed successfully."
-}
-catch {
-    Write-Log -Level Error -Message ("Failed: {0}" -f $_.Exception.Message)
-    if ($PSBoundParameters['Verbose']) {
-        $_ | Format-List * -Force | Out-String | ForEach-Object {
-            Write-Log -Level Verbose -Message $_
-        }
-    }
-    exit 1
-}
-finally {
-    if (Get-MgContext) {
-        Write-Log -Level Verbose -Message "Disconnecting from Microsoft Graph."
-        Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
+    catch {
+        Write-Error "Failed to create Group.Unified setting: $_"
+        exit 1
     }
 }
+
+if (-not $SkipLabelSync) {
+    Write-Host "Connecting to Security & Compliance Center (IPPS)..."
+    try {
+        Connect-IPPSSession -ErrorAction Stop
+        Write-Host "Connected to Security & Compliance Center (IPPS)."
+        Execute-AzureAdLabelSync -ErrorAction Stop
+        Write-Host "Label sync triggered successfully."
+    } catch {
+        Write-Error "Failed to trigger label sync: $_"
+        exit 1
+    }
+} else {
+    Write-Host "Skipping label sync as requested."
+}
+
+Write-Host "Script completed."
