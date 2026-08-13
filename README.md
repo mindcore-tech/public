@@ -1,4 +1,4 @@
-# mindcore-tech/public
+# Mindcore public content
 
 This repository contains a collection of public scripts, code samples, and utilities shared by Mindcore P/S. Many of these resources are referenced from articles and tutorials published on [Mindcore's Blog](https://blog.mindcore.dk).
 
@@ -20,7 +20,7 @@ The goal of this repository is to provide easy access to practical tools and cod
 3. **Download** or clone the repository to your local machine.
 4. **Run** or adapt the code to your environment as needed.
 
-> **Note:** Please review each script and configuration before use, and test in a safe environment. Mindcore Tech is not responsible for any unintended consequences.
+> **Note:** Please review each script and configuration before use, and test in a safe environment. Mindcore is not responsible for any unintended consequences.
 
 ## Contribution
 
